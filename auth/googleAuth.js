@@ -30,17 +30,4 @@ async (accessToken, refreshToken, profile, done) => {
     }
 }));
 
-passport.serializeUser((customer, done) => {
-    done(null, customer.id);
-});
-
-passport.deserializeUser(async (id, done) => {
-    try {
-        const customer = await Customer.findById(id);
-        done(null, customer);
-    } catch (error) {
-        done(error, null);
-    }
-});
-
 module.exports = passport;

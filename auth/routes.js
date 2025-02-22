@@ -1,6 +1,5 @@
-// auth/routes.js
 const express = require('express');
-const passport = require('./googleAuth');
+const passport = require('./passportConfig'); // Import the combined Passport configuration
 const Customer = require('../models/Customer');
 const ShippingAddress = require('../models/ShippingAddress');
 const { sendVerificationEmail } = require('./emailService');
@@ -71,6 +70,142 @@ router.get('/auth/google/callback',
             }
         } catch (error) {
             console.error('Error during Google authentication:', error);
+            res.status(500).send('Internal Server Error');
+        }
+    }
+);
+
+// Microsoft OAuth Routes
+router.get('/auth/microsoft',
+    passport.authenticate('azuread-openidconnect', { scope: ['openid', 'profile', 'email'] })
+);
+
+router.post('/auth/microsoft/callback',
+    passport.authenticate('azuread-openidconnect', { failureRedirect: '/' }),
+    async (req, res) => {
+        const { email, firstName, lastName } = req.user;
+
+        try {
+            // Check if the customer already exists
+            let customer = await Customer.findOne({ email });
+
+            if (!customer) {
+                // Create a new customer if they don't exist
+                customer = new Customer({
+                    email,
+                    firstName,
+                    lastName,
+                    isVerified: false, // New users need to verify their email
+                });
+                await customer.save();
+
+                // Generate verification token
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                // Send verification email
+                sendVerificationEmail(email, verificationLink);
+
+                // Notify the user that an email has been sent
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else if (!customer.isVerified) {
+                // If the customer exists but is not verified, resend the verification email
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                sendVerificationEmail(email, verificationLink);
+
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else {
+                // If the customer is already verified, check if they have a shipping address
+                const shippingAddress = await ShippingAddress.findOne({ customer: customer._id });
+
+                if (shippingAddress) {
+                    // If shipping address exists, redirect to account page
+                    return res.redirect('/account');
+                } else {
+                    // If shipping address does not exist, redirect to shipping address form
+                    return res.redirect('/shipping-address');
+                }
+            }
+        } catch (error) {
+            console.error('Error during Microsoft authentication:', error);
+            res.status(500).send('Internal Server Error');
+        }
+    }
+);
+
+// Facebook OAuth Routes
+router.get('/auth/facebook',
+    passport.authenticate('facebook', { scope: ['email'] }) // Request email permission
+);
+
+router.get('/auth/facebook/callback',
+    passport.authenticate('facebook', { failureRedirect: '/' }),
+    async (req, res) => {
+        const { email, firstName, lastName } = req.user;
+
+        try {
+            // Check if the customer already exists
+            let customer = await Customer.findOne({ email });
+
+            if (!customer) {
+                // Create a new customer if they don't exist
+                customer = new Customer({
+                    email,
+                    firstName,
+                    lastName,
+                    isVerified: false, // New users need to verify their email
+                });
+                await customer.save();
+
+                // Generate verification token
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                // Send verification email
+                sendVerificationEmail(email, verificationLink);
+
+                // Notify the user that an email has been sent
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else if (!customer.isVerified) {
+                // If the customer exists but is not verified, resend the verification email
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                sendVerificationEmail(email, verificationLink);
+
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else {
+                // If the customer is already verified, check if they have a shipping address
+                const shippingAddress = await ShippingAddress.findOne({ customer: customer._id });
+
+                if (shippingAddress) {
+                    // If shipping address exists, redirect to account page
+                    return res.redirect('/account');
+                } else {
+                    // If shipping address does not exist, redirect to shipping address form
+                    return res.redirect('/shipping-address');
+                }
+            }
+        } catch (error) {
+            console.error('Error during Facebook authentication:', error);
             res.status(500).send('Internal Server Error');
         }
     }
