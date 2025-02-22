@@ -16,19 +16,63 @@ router.get('/auth/google',
 router.get('/auth/google/callback',
     passport.authenticate('google', { failureRedirect: '/' }),
     async (req, res) => {
-        // Generate verification token
-        const token = generateVerificationToken(req.user.email);
-        const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+        const { email, firstName, lastName } = req.user;
 
-        // Send verification email
-        sendVerificationEmail(req.user.email, verificationLink);
+        try {
+            // Check if the customer already exists
+            let customer = await Customer.findOne({ email });
 
-        // Notify the user that an email has been sent
-        res.send(`
-            <h1>Email Sent</h1>
-            <p>An email has been sent to <strong>${req.user.email}</strong>. Please check your inbox to verify your account.</p>
-            <p><a href="/">Return to Home</a></p>
-        `);
+            if (!customer) {
+                // Create a new customer if they don't exist
+                customer = new Customer({
+                    email,
+                    firstName,
+                    lastName,
+                    isVerified: false, // New users need to verify their email
+                });
+                await customer.save();
+
+                // Generate verification token
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                // Send verification email
+                sendVerificationEmail(email, verificationLink);
+
+                // Notify the user that an email has been sent
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else if (!customer.isVerified) {
+                // If the customer exists but is not verified, resend the verification email
+                const token = generateVerificationToken(email);
+                const verificationLink = `http://localhost:3000/verify-email?token=${token}`;
+
+                sendVerificationEmail(email, verificationLink);
+
+                return res.send(`
+                    <h1>Email Sent</h1>
+                    <p>An email has been sent to <strong>${email}</strong>. Please check your inbox to verify your account.</p>
+                    <p><a href="/">Return to Home</a></p>
+                `);
+            } else {
+                // If the customer is already verified, check if they have a shipping address
+                const shippingAddress = await ShippingAddress.findOne({ customer: customer._id });
+
+                if (shippingAddress) {
+                    // If shipping address exists, redirect to account page
+                    return res.redirect('/account');
+                } else {
+                    // If shipping address does not exist, redirect to shipping address form
+                    return res.redirect('/shipping-address');
+                }
+            }
+        } catch (error) {
+            console.error('Error during Google authentication:', error);
+            res.status(500).send('Internal Server Error');
+        }
     }
 );
 
@@ -53,8 +97,29 @@ router.get('/verify-email', async (req, res) => {
             return res.status(404).send('Customer not found');
         }
 
-        // Redirect to shipping address form
-        res.redirect('/shipping-address');
+        // Log the user in after verification
+        req.login(customer, (err) => {
+            if (err) {
+                console.error('Error logging in:', err);
+                return res.status(500).send('Internal Server Error');
+            }
+
+            // Check if the user has a shipping address
+            ShippingAddress.findOne({ customer: customer._id })
+                .then((shippingAddress) => {
+                    if (shippingAddress) {
+                        // If shipping address exists, redirect to account page
+                        return res.redirect('/account');
+                    } else {
+                        // If shipping address does not exist, redirect to shipping address form
+                        return res.redirect('/shipping-address');
+                    }
+                })
+                .catch((error) => {
+                    console.error('Error finding shipping address:', error);
+                    return res.status(500).send('Internal Server Error');
+                });
+        });
     } catch (error) {
         console.error('Error verifying email:', error);
         res.status(500).send('Internal Server Error');
@@ -63,6 +128,10 @@ router.get('/verify-email', async (req, res) => {
 
 // Shipping Address Form
 router.get('/shipping-address', (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/');
+    }
+
     res.send(`
         <h1>Update Shipping Address</h1>
         <form action="/shipping-address" method="POST">
@@ -79,6 +148,10 @@ router.get('/shipping-address', (req, res) => {
 });
 
 router.post('/shipping-address', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/');
+    }
+
     const { first_name, last_name, phone_number, delivery_address, state, city, country } = req.body;
 
     try {
@@ -104,11 +177,59 @@ router.post('/shipping-address', async (req, res) => {
             { upsert: true, new: true }
         );
 
-        res.send('Shipping address updated successfully!');
+        // Redirect to account page after updating shipping address
+        res.redirect('/account');
     } catch (error) {
         console.error('Error updating shipping address:', error);
         res.status(500).send('Internal Server Error');
     }
+});
+
+// Account Page
+router.get('/account', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/');
+    }
+
+    try {
+        // Find the customer and their shipping address
+        const customer = await Customer.findById(req.user.id);
+        const shippingAddress = await ShippingAddress.findOne({ customer: customer._id });
+
+        if (!customer) {
+            return res.status(404).send('Customer not found');
+        }
+
+        // Display account details
+        res.send(`
+            <h1>Welcome, ${customer.firstName} ${customer.lastName}</h1>
+            <h2>Your Shipping Address:</h2>
+            ${shippingAddress ? `
+                <p><strong>Full Name:</strong> ${shippingAddress.first_name} ${shippingAddress.last_name}</p>
+                <p><strong>Phone Number:</strong> ${shippingAddress.phone_number}</p>
+                <p><strong>Delivery Address:</strong> ${shippingAddress.delivery_address}</p>
+                <p><strong>State:</strong> ${shippingAddress.state}</p>
+                <p><strong>City:</strong> ${shippingAddress.city}</p>
+                <p><strong>Country:</strong> ${shippingAddress.country}</p>
+            ` : '<p>No shipping address provided yet.</p>'}
+            <p><a href="/shipping-address">Update Shipping Address</a></p>
+            <p><a href="/logout">Logout</a></p>
+        `);
+    } catch (error) {
+        console.error('Error fetching account details:', error);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+// Logout Route
+router.get('/logout', (req, res) => {
+    req.logout((err) => {
+        if (err) {
+            console.error('Error logging out:', err);
+            return res.status(500).send('Internal Server Error');
+        }
+        res.redirect('/');
+    });
 });
 
 module.exports = router;
